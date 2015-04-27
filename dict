@@ -1,0 +1,141 @@
+#!/usr/bin/env python
+#--*-- coding:utf-8 --*--
+import requests, requests.utils, pickle
+import httplib
+import sys
+import pprint
+from BeautifulSoup import BeautifulSoup
+import re
+import shutil
+import netrc
+import os.path
+from optparse import OptionParser
+from _lfu import WordList
+
+SEARCH_URL='http://www.bing.com/dict/search?q={0}&go=%E6%8F%90%E4%BA%A4&qs=n&form=CM&pq=test&sc=0-0&sp=-1&sk='
+
+s = requests.Session()
+s.headers.update({'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_9_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/37.0.2062.94 Safari/537.36',
+	'Connection':'keep-alive',
+	'Content-type':'application/x-www-form-urlencoded'})
+# headers = {'X-Requested-With':'XMLHttpRequest'}
+def saveCookies():
+  with open(COOKIE_FILE, 'w') as f:
+      pickle.dump(requests.utils.dict_from_cookiejar(s.cookies), f)
+
+def loadCookies():
+  with open(COOKIE_FILE) as f:
+      cookies = requests.utils.cookiejar_from_dict(pickle.load(f))
+      s.cookies = cookies
+  print >>sys.stderr, '[+] load cookies!!!'
+
+def patch_send():
+    old_send= httplib.HTTPConnection.send
+    def new_send( self, data ):
+        print >>sys.stderr, '>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>'
+        print >>sys.stderr, data
+        print >>sys.stderr, '<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<'
+        return old_send(self, data) #return is not necessary, but never hurts, in case the library is changed
+    httplib.HTTPConnection.send= new_send
+
+def debugReq(r):
+  pp = pprint.PrettyPrinter(indent=4)
+  pp.pprint(r.status_code)
+  # pp.pprint(r.request.__dict__)
+  print >>sys.stderr, r.text
+  print >>sys.stderr, s.cookies.get_dict()
+
+def get_content(item): 
+  return re.sub('<[^>]*>', '', item.renderContents())
+
+def main():
+  wl = WordList()
+
+  parser = OptionParser(usage='%prog [options] [word]', description='lookup dictionary')
+  parser.add_option("-l", "--list", action='store_true', help='dump word list')
+  (options, args) = parser.parse_args()
+
+  if options.list:
+    wl.dump_console()
+    return
+
+  if len(args) < 1:
+    print "Please give the word!"
+    return
+
+  '''
+  add word to redis wordlist
+  '''
+  wl.add_word(sys.argv[1])
+  r = s.get(SEARCH_URL.format(sys.argv[1]))
+  soup = BeautifulSoup(r.text, convertEntities=BeautifulSoup.HTML_ENTITIES)
+  #soup = BeautifulSoup(HTMLParser.HTMLParser().unescape(r.text))
+
+  """
+    voice
+  """
+  voiceUS = soup.find('div', attrs={"class":"hd_prUS"})
+  voiceUK = soup.find('div', attrs={"class":"hd_pr"})
+  if voiceUS is not None and len(voiceUS.text) > 2:
+    print voiceUS.text,
+  if voiceUK is not None and len(voiceUK.text) > 2:
+    print voiceUK.text
+
+  """
+  basic definition
+  """
+  defs = soup.findAll('span',attrs={'class':'def'})
+  for item in defs:
+    print get_content(item)
+  print 
+
+  """
+  variety
+  """
+  variety = soup.find('div',attrs={'class':'hd_if'})
+  if variety is not None:
+    print "Variety:\n\t",
+    print get_content(variety)
+
+  """
+  Get Synonym
+  """
+  synonyms = soup.findAll('span', attrs={'class':'p1-4'})
+  lst = []
+  for item in synonyms:
+    lst.append(get_content(item))
+
+  if len(lst) > 0:
+    print "Synonyms:\n\t%s"%(','.join(lst),)
+
+  """
+  Get E-C
+  """
+  ee = soup.find('div', attrs={'id':'crossid'})
+  if ee is not None:
+    ee = ee.find('div', attrs={'class':'gl_none'})
+    if ee is not None:
+      ee = ee.findAll('div', attrs={'class':'de_li1 de_li3'})
+      lst = []
+      for item in ee:
+        lst.append(get_content(item))
+      print "E-C:\n\t%s"%('\n\t'.join(lst),)
+
+  """
+  authid,
+  Get E-E
+  """
+  ee = soup.find('div', attrs={'id':'homoid'})
+  if ee is not None:
+    ee = ee.find('div', attrs={'class':'gl_none'})
+    if ee is not None:
+      ee = ee.findAll('div', attrs={'class':'de_li1 de_li3'})
+      lst = []
+      for item in ee:
+        lst.append(get_content(item))
+        #sentences = item.findAll(attrs={'class':'p1-12'})
+        #lst.append(' '.join([i.text for i in sentences if len(i.text) > 0]))
+      print "E-E:\n\t%s"%('\n\t'.join(lst),)
+
+if __name__ == "__main__":
+  main()
